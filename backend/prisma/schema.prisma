@@ -1,0 +1,164 @@
+// Esquema de datos — Ponedoras (Agroactivo)
+// Jerarquía multi-tenant: Organizacion (tenant) -> Granja -> Galpon -> Lote -> RegistroProduccion
+// Toda tabla operativa cuelga, directa o indirectamente, de organizacionId para el aislamiento entre avicultores.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Rol {
+  SUPER_ADMIN   // Agroactivo — ve/administra toda la red
+  ADMIN_GRANJA  // Dueño/administrador de una organización (una o varias granjas)
+  SUPERVISOR    // Registra producción, mortalidad, limpieza, vacunas
+  DIGITADOR     // Solo formularios de captura (producción, despacho)
+  VENDEDOR      // Ventas, despachos, cartera de sus clientes
+  CONTADOR      // Ve ventas/despachos/facturación, no edita producción
+}
+
+enum TipoGalpon {
+  LEVANTE
+  POSTURA
+  DESCARTE
+}
+
+enum OrigenLote {
+  POLLITA_1_DIA
+  PREPOSTURA
+}
+
+enum EstadoLote {
+  EN_CRIANZA
+  ACTIVO
+  DESCARTADO
+}
+
+model Organizacion {
+  id        String   @id @default(uuid())
+  nombre    String
+  nit       String?
+  activa    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  usuarios Usuario[]
+  granjas  Granja[]
+
+  @@map("organizaciones")
+}
+
+model Usuario {
+  id             String   @id @default(uuid())
+  organizacionId String
+  organizacion   Organizacion @relation(fields: [organizacionId], references: [id])
+
+  email        String   @unique
+  passwordHash String
+  nombre       String
+  rol          Rol
+  activo       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  registrosProduccionCreados RegistroProduccion[] @relation("ProduccionCreadaPor")
+
+  @@index([organizacionId])
+  @@map("usuarios")
+}
+
+model Granja {
+  id             String   @id @default(uuid())
+  organizacionId String
+  organizacion   Organizacion @relation(fields: [organizacionId], references: [id])
+
+  nombre    String
+  activa    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  galpones Galpon[]
+
+  @@index([organizacionId])
+  @@map("granjas")
+}
+
+model Galpon {
+  id       String @id @default(uuid())
+  granjaId String
+  granja   Granja @relation(fields: [granjaId], references: [id])
+
+  // organizacionId duplicado a propósito: permite filtrar/asegurar por tenant
+  // sin tener que hacer join hasta Granja en cada consulta (defensa en profundidad).
+  organizacionId String
+
+  nombre     String     // libre — "Galpón BB" puede seguir llamándose así
+  tipo       TipoGalpon // el tipo, no el nombre, es lo que usa la lógica de negocio
+  capacidad  Int
+  activo     Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+
+  lotes Lote[]
+
+  @@index([granjaId])
+  @@index([organizacionId])
+  @@map("galpones")
+}
+
+model Lote {
+  id       String @id @default(uuid())
+  galponId String
+  galpon   Galpon @relation(fields: [galponId], references: [id])
+
+  organizacionId String
+
+  origen              OrigenLote
+  edadIngresoSemanas  Int         // p.ej. 0 para pollita de 1 día, o la edad real si entra en prepostura
+  fechaIngreso        DateTime
+  avesIniciales       Int
+  avesActuales        Int
+  estado              EstadoLote  @default(EN_CRIANZA)
+  createdAt           DateTime    @default(now())
+
+  registrosProduccion RegistroProduccion[]
+
+  @@index([galponId])
+  @@index([organizacionId])
+  @@map("lotes")
+}
+
+model RegistroProduccion {
+  id     String @id @default(uuid())
+  loteId String
+  lote   Lote   @relation(fields: [loteId], references: [id])
+
+  organizacionId String
+
+  fecha DateTime @db.Date
+
+  tipoA      Int @default(0)
+  tipoAA     Int @default(0)
+  tipoAAA    Int @default(0)
+  tipoJumbo  Int @default(0)
+  tipoB      Int @default(0)
+  tipoC      Int @default(0)
+  totiados   Int @default(0)
+
+  avesVivas               Int
+  consumoConcentradoGramos Int @default(0)
+
+  // Trazabilidad — nada se borra físicamente, se corrige con auditoría (ver política de edición)
+  creadoPorId   String
+  creadoPor     Usuario  @relation("ProduccionCreadaPor", fields: [creadoPorId], references: [id])
+  creadoEn      DateTime @default(now())
+  editadoPorId  String?
+  editadoEn     DateTime?
+  motivoEdicion String?
+  anulado       Boolean  @default(false)
+  motivoAnulacion String?
+
+  @@index([loteId])
+  @@index([organizacionId])
+  @@index([fecha])
+  @@map("registros_produccion")
+}
